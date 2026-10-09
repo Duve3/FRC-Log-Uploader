@@ -1,0 +1,58 @@
+[project]
+name = "frc-log-uploader"
+version = "0.1.0"
+description = "FRC robot log uploader - automatically downloads logs from roboRIO and uploads to Google Drive"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "typer[all]>=0.12",
+    "google-api-python-client>=2.100",
+    "google-auth-httplib2>=0.2.0",
+    "google-auth-oauthlib>=1.2",
+    "pyftpdlib>=1.5.7",
+    "tomli>=2.0",
+    "tomli-w>=1.0",
+    "rich>=13.0",
+]
+
+[project.entry-points]
+"console_scripts" = { "frc-log-uploader" = "frc_log_uploader.__main__:main" }
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-mock>=3.12",
+    "ruff>=0.5",
+]
+
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.uv]
+dev-dependencies = [
+    "pytest>=8.0",
+    "pytest-mock>=3.12",
+    "ruff>=0.5",
+]
+
+[tool.ruff]
+target-version = "py313"
+line-length = 100
+
+[tool.ruff.lint]
+ignore = ["E501"]
+select = ["E", "F", "I", "UP", "W"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_functions = ["test_*"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["frc_log_uploader*"]
