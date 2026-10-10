@@ -2,7 +2,6 @@
 
 from unittest.mock import Mock, patch
 
-from frc_log_uploader.config import RobotConfig
 from frc_log_uploader.robot.locator import RobotAddress, RobotLocator, RobotNotFoundError
 
 

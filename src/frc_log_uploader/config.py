@@ -18,6 +18,8 @@ class RobotConfig:
     password: str = ""
     port: int = 21
     use_ftp: bool = True
+    connection_timeout: float = 10.0
+    transfer_timeout: float = 30.0
 
 
 @dataclass

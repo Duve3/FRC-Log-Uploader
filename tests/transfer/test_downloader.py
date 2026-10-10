@@ -1,11 +1,10 @@
 """Tests for cloud upload and file cleanup."""
 
-from pathlib import Path
-from unittest.mock import Mock, patch
-
-from frc_log_uploader.transfer.downloader import DownloadResult
-from frc_log_uploader.discovery.models import LogFile
 from datetime import datetime
+from pathlib import Path
+
+from frc_log_uploader.discovery.models import LogFile
+from frc_log_uploader.transfer.downloader import DownloadResult
 
 
 def test_download_result_repr():

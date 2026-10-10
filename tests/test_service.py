@@ -1,7 +1,6 @@
 """Tests for service layer logic."""
 
 from datetime import datetime, timedelta
-from unittest.mock import Mock, patch
 
 from frc_log_uploader.config import Config, LogsConfig, RobotConfig
 from frc_log_uploader.discovery.models import DiscoveryResult, LogFile
