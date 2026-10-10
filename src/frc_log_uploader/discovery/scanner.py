@@ -85,22 +85,57 @@ class FTPConnection:
 
             # Login with credentials
             try:
-                self.ftp.login(self.config.username, self.config.password)
+                # Try login - for FRC roboRIO, credentials are typically lvuser with empty password
+                # or anonymous access might work
+                if self.config.username and self.config.password:
+                    self.ftp.login(self.config.username, self.config.password)
+                elif self.config.username and not self.config.password:
+                    # Try with empty password
+                    self.ftp.login(self.config.username, "")
+                else:
+                    # Try anonymous login if no credentials specified
+                    try:
+                        self.ftp.login("anonymous", "")
+                    except Exception:
+                        self.ftp.login("lvuser", "")
             except ftplib.error_perm as e:
                 # Check for specific vsftpd error
-                if "500 OOPS: bad state in vsf_one_process_login" in str(e):
+                error_str = str(e)
+                if "500 OOPS: bad state in vsf_one_process_login" in error_str:
+                    # This can happen if we've already sent login commands or server state is bad
+                    # Try to re-establish connection cleanly
+                    logger.warning("vsftpd 'bad state' error detected, attempting to reconnect")
+                    self._safe_disconnect()
+                    # Retry once with a fresh connection
+                    self.ftp = ftplib.FTP()
+                    self.ftp.connect(
+                        self.config.address,
+                        self.config.port,
+                        timeout=self.config.connection_timeout,
+                    )
+                    self._connected = True
+                    if self.debug:
+                        self.ftp.set_debuglevel(2)
+                    # Try anonymous login as fallback for roboRIO
+                    try:
+                        self.ftp.login("anonymous", "")
+                    except Exception:
+                        try:
+                            self.ftp.login("lvuser", "")
+                        except Exception:
+                            raise FTPAuthError(
+                                "Server rejected login: vsftpd 'bad state' error even after reconnect. "
+                                "This may indicate a server-side issue or invalid credentials. "
+                                f"Server response: {e}",
+                                "login",
+                                e,
+                            )
+                else:
                     raise FTPAuthError(
-                        "Server rejected login: vsftpd 'bad state' error. "
-                        "This may indicate a server-side issue or invalid credentials. "
-                        f"Server response: {e}",
+                        f"FTP authentication failed: {e}",
                         "login",
                         e,
                     )
-                raise FTPAuthError(
-                    f"FTP authentication failed: {e}",
-                    "login",
-                    e,
-                )
             except (socket.gaierror, UnicodeError) as e:
                 raise FTPConnectionError(
                     f"Hostname resolution failed for '{self.config.address}': {e}",
