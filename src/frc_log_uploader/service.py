@@ -6,7 +6,7 @@ from pathlib import Path
 
 from frc_log_uploader.cloud import CloudProvider, create_provider
 from frc_log_uploader.config import Config
-from frc_log_uploader.discovery import DiscoveryResult, LogFile, LogScanner
+from frc_log_uploader.discovery import DiscoveryResult, FTPConnection, LogFile, LogScanner
 from frc_log_uploader.robot import RobotAddress, RobotLocator, RobotNotFoundError
 from frc_log_uploader.transfer import LogDownloader
 
@@ -69,13 +69,18 @@ class LogUploaderService:
         logger.info(f"Selected {len(stable_logs)} stable logs for upload")
         return stable_logs
 
-    def _is_stable(self, log: LogFile) -> bool:
+    def _is_stable(self, log: LogFile, conn: FTPConnection | None = None) -> bool:
         """Check if a log file is stable (not being written)."""
         if log.is_directory:
             # For directories, check if any file inside is changing
             # For simplicity, we'll consider directories stable
             return True
 
+        if conn is not None:
+            return self.scanner.check_file_stable_with_connection(
+                conn, log.full_remote_path, self.config.logs.stability_seconds
+            )
+        # Fallback to creating own connection (used by select_logs before shared conn exists)
         return self.scanner.check_file_stable(
             log.full_remote_path, self.config.logs.stability_seconds
         )
@@ -95,8 +100,24 @@ class LogUploaderService:
             if not logs_to_upload:
                 return False
 
-            # Download logs
-            download_results = self.downloader.download_multiple(logs_to_upload)
+            # Use a single FTP connection for stability checks and downloads
+            with FTPConnection(self.config.robot) as conn:
+                # Re-check stability with shared connection
+                stable_logs = []
+                for log in logs_to_upload:
+                    if self._is_stable(log, conn):
+                        stable_logs.append(log)
+                    else:
+                        logger.info(f"Skipping unstable log: {log.name}")
+
+                if not stable_logs:
+                    logger.info("No stable logs available")
+                    return False
+
+                logger.info(f"Selected {len(stable_logs)} stable logs for upload")
+
+                # Download logs using shared connection
+                download_results = self.downloader.download_multiple(stable_logs, conn)
 
             # Upload successful downloads
             provider = self._get_cloud_provider()
@@ -118,7 +139,7 @@ class LogUploaderService:
                     logger.error(f"Upload failed for {result.log_file.name}: {e}")
                     # Keep local file for retry
 
-            logger.info(f"Cycle complete: {uploaded_count}/{len(logs_to_upload)} logs uploaded")
+            logger.info(f"Cycle complete: {uploaded_count}/{len(stable_logs)} logs uploaded")
             return uploaded_count > 0
 
         except RobotNotFoundError as e:

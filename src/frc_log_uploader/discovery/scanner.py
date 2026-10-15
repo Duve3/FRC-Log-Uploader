@@ -417,10 +417,19 @@ class LogScanner:
             return datetime.now()
 
     def check_file_stable(self, remote_path: str, interval: float) -> bool:
-        """Check if a file is stable (not being written to)."""
+        """Check if a file is stable (not being written to).
+
+        Creates its own connection - use check_file_stable_with_connection for reuse.
+        """
         with FTPConnection(self.config) as conn:
-            size1 = conn.get_file_size(remote_path)
-            time.sleep(interval)
-            size2 = conn.get_file_size(remote_path)
+            return self.check_file_stable_with_connection(conn, remote_path, interval)
+
+    def check_file_stable_with_connection(
+        self, conn: FTPConnection, remote_path: str, interval: float
+    ) -> bool:
+        """Check if a file is stable using an existing connection."""
+        size1 = conn.get_file_size(remote_path)
+        time.sleep(interval)
+        size2 = conn.get_file_size(remote_path)
 
         return size1 == size2 and size1 > 0

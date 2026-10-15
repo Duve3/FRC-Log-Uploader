@@ -40,17 +40,22 @@ class LogDownloader:
         self.scanner = LogScanner(config)
         self.staging_dir.mkdir(parents=True, exist_ok=True)
 
-    def download(self, log_file: LogFile) -> DownloadResult:
-        """Download a single log file or directory."""
+    def download(self, log_file: LogFile, conn=None) -> DownloadResult:
+        """Download a single log file or directory.
+
+        Args:
+            log_file: The log file to download
+            conn: Optional existing FTPConnection to reuse
+        """
         logger.info(f"Downloading {log_file.name} ({log_file.size / 1024 / 1024:.1f} MB)")
 
         local_path = self.staging_dir / log_file.name
 
         try:
             if log_file.is_directory:
-                self._download_directory(log_file, local_path)
+                self._download_directory(log_file, local_path, conn)
             else:
-                self._download_file(log_file, local_path)
+                self._download_file(log_file, local_path, conn)
 
             logger.info(f"Downloaded {log_file.name} to {local_path}")
             return DownloadResult(log_file, local_path, success=True)
@@ -67,21 +72,39 @@ class LogDownloader:
                     local_path.unlink()
             return DownloadResult(log_file, local_path, success=False, error=str(e))
 
-    def _download_file(self, log_file: LogFile, local_path: Path) -> None:
-        """Download a single file."""
+    def _download_file(self, log_file: LogFile, local_path: Path, conn=None) -> None:
+        """Download a single file.
+
+        Args:
+            log_file: The log file to download
+            local_path: Local destination path
+            conn: Optional existing FTPConnection to reuse. If not provided, creates a new one.
+        """
         from ..discovery import FTPConnection
 
-        with FTPConnection(self.config) as conn:
+        if conn is not None:
             conn.download_file(log_file.full_remote_path, local_path)
+        else:
+            with FTPConnection(self.config) as new_conn:
+                new_conn.download_file(log_file.full_remote_path, local_path)
 
-    def _download_directory(self, log_dir: LogFile, local_dir: Path) -> None:
-        """Download a directory recursively."""
+    def _download_directory(self, log_dir: LogFile, local_dir: Path, conn=None) -> None:
+        """Download a directory recursively.
+
+        Args:
+            log_dir: The log directory to download
+            local_dir: Local destination directory
+            conn: Optional existing FTPConnection to reuse. If not provided, creates new ones.
+        """
         from ..discovery import FTPConnection
 
         local_dir.mkdir(parents=True, exist_ok=True)
 
-        with FTPConnection(self.config) as conn:
+        if conn is not None:
             items = conn.list_files(log_dir.full_remote_path)
+        else:
+            with FTPConnection(self.config) as new_conn:
+                items = new_conn.list_files(log_dir.full_remote_path)
 
         for name, facts in items:
             if name in (".", ".."):
@@ -99,16 +122,30 @@ class LogDownloader:
                     modified_time=log_dir.modified_time,
                     is_directory=True,
                 )
-                self._download_directory(sub_log, local_path)
+                self._download_directory(sub_log, local_path, conn)
             else:
-                with FTPConnection(self.config) as conn:
-                    conn.download_file(remote_path, local_path)
+                self._download_file(
+                    log_file=LogFile(
+                        remote_path=remote_path,
+                        name=name,
+                        size=0,
+                        modified_time=log_dir.modified_time,
+                        is_directory=False,
+                    ),
+                    local_path=local_path,
+                    conn=conn,
+                )
 
-    def download_multiple(self, log_files: list[LogFile]) -> list[DownloadResult]:
-        """Download multiple log files."""
+    def download_multiple(self, log_files: list[LogFile], conn=None) -> list[DownloadResult]:
+        """Download multiple log files.
+
+        Args:
+            log_files: List of log files to download
+            conn: Optional existing FTPConnection to reuse for all downloads
+        """
         results = []
         for log_file in log_files:
-            result = self.download(log_file)
+            result = self.download(log_file, conn)
             results.append(result)
             if not result.success:
                 logger.warning(f"Download failed for {log_file.name}: {result.error}")

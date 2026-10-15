@@ -60,3 +60,6 @@ dmypy.json
 # Temporary files
 *.tmp
 *.temp
+
+# WPILib logs
+*.wpilog
