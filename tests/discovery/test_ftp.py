@@ -1,8 +1,9 @@
-"""Tests for FTP connection and download functionality."""
+"""Tests for SFTP connection and download functionality."""
 
 import logging
 from unittest.mock import MagicMock, patch
 
+import paramiko
 import pytest
 
 from frc_log_uploader.config import RobotConfig
@@ -17,11 +18,21 @@ from frc_log_uploader.discovery.scanner import (
 )
 
 
-class TestFTPConnectionErrors:
-    """Test FTP connection error handling."""
+def make_sftp_attr(filename, st_mode, st_size, st_mtime=None):
+    """Create a mock SFTPAttributes-like object."""
+    attr = MagicMock()
+    attr.filename = filename
+    attr.st_mode = st_mode
+    attr.st_size = st_size
+    attr.st_mtime = st_mtime
+    return attr
 
-    def test_ftp_connection_refused(self):
-        """Test FTP connection to refused port raises FTPConnectionError."""
+
+class TestSFTPConnectionErrors:
+    """Test SFTP connection error handling."""
+
+    def test_sftp_connection_refused(self):
+        """Test SFTP connection to refused port raises FTPConnectionError."""
         config = RobotConfig(
             address="127.0.0.1",
             port=1,
@@ -40,11 +51,11 @@ class TestFTPConnectionErrors:
             "connection" in str(exc_info.value).lower() or "refused" in str(exc_info.value).lower()
         )
 
-    def test_ftp_invalid_hostname(self):
-        """Test FTP connection with invalid hostname raises FTPConnectionError."""
+    def test_sftp_invalid_hostname(self):
+        """Test SFTP connection with invalid hostname raises FTPConnectionError."""
         config = RobotConfig(
             address="invalid-hostname-that-does-not-exist-12345.local",
-            port=21,
+            port=22,
             username="lvuser",
             password="",
             connection_timeout=0.1,
@@ -60,11 +71,11 @@ class TestFTPConnectionErrors:
             "resolution" in str(exc_info.value).lower() or "failed" in str(exc_info.value).lower()
         )
 
-    def test_ftp_url_address_rejected(self):
+    def test_sftp_url_address_rejected(self):
         """Test that URL-style addresses are rejected."""
         config = RobotConfig(
-            address="ftp://127.0.0.1:21",
-            port=21,
+            address="sftp://127.0.0.1:22",
+            port=22,
             username="lvuser",
             password="",
         )
@@ -76,11 +87,11 @@ class TestFTPConnectionErrors:
         assert exc_info.value.operation == "connect"
         assert "invalid address format" in str(exc_info.value).lower()
 
-    def test_ftp_connection_unicode_error(self):
-        """Test FTP connection with invalid Unicode in hostname."""
+    def test_sftp_connection_unicode_error(self):
+        """Test SFTP connection with invalid Unicode in hostname."""
         config = RobotConfig(
             address="\udcff",  # Invalid surrogate
-            port=21,
+            port=22,
             username="lvuser",
             password="",
             connection_timeout=0.1,
@@ -94,19 +105,20 @@ class TestFTPConnectionErrors:
         assert exc_info.value.operation == "connect"
 
 
-class TestFTPConnectionWithMock:
-    """Test FTP connection using mocked ftplib."""
+class TestSFTPConnectionWithMock:
+    """Test SFTP connection using mocked paramiko."""
 
-    @patch("frc_log_uploader.discovery.scanner.ftplib.FTP")
-    def test_ftp_connection_success(self, mock_ftp_class):
-        """Test successful FTP connection and login."""
-        mock_ftp = MagicMock()
-        mock_ftp.getwelcome.return_value = "220 Welcome"
-        mock_ftp_class.return_value = mock_ftp
+    @patch("frc_log_uploader.discovery.scanner.paramiko.SSHClient")
+    def test_sftp_connection_success(self, mock_ssh_class):
+        """Test successful SFTP connection and authentication."""
+        mock_ssh = MagicMock()
+        mock_sftp = MagicMock()
+        mock_ssh.open_sftp.return_value = mock_sftp
+        mock_ssh_class.return_value = mock_ssh
 
         config = RobotConfig(
             address="10.100.79.2",
-            port=21,
+            port=22,
             username="lvuser",
             password="",
             connection_timeout=10.0,
@@ -115,26 +127,30 @@ class TestFTPConnectionWithMock:
 
         with FTPConnection(config) as conn:
             assert conn._connected
-            assert conn.ftp is mock_ftp
+            assert conn._sftp is mock_sftp
 
-        mock_ftp.connect.assert_called_once_with("10.100.79.2", 21, timeout=10.0)
-        mock_ftp.login.assert_called_once_with("lvuser", "")
-        mock_ftp.set_pasv.assert_called_once_with(True)
-        mock_ftp.quit.assert_called_once()
+        mock_ssh.connect.assert_called_once_with(
+            hostname="10.100.79.2",
+            port=22,
+            username="lvuser",
+            password="",
+            timeout=10.0,
+            allow_agent=False,
+            look_for_keys=False,
+        )
+        mock_ssh.open_sftp.assert_called_once()
+        mock_ssh.close.assert_called_once()
 
-    @patch("frc_log_uploader.discovery.scanner.ftplib.FTP")
-    def test_ftp_connection_wrong_password(self, mock_ftp_class):
-        """Test FTP connection with wrong password raises FTPAuthError."""
-        import ftplib
-
-        mock_ftp = MagicMock()
-        mock_ftp.getwelcome.return_value = "220 Welcome"
-        mock_ftp.login.side_effect = ftplib.error_perm("530 Login incorrect")
-        mock_ftp_class.return_value = mock_ftp
+    @patch("frc_log_uploader.discovery.scanner.paramiko.SSHClient")
+    def test_sftp_connection_wrong_password(self, mock_ssh_class):
+        """Test SFTP connection with wrong password raises FTPAuthError."""
+        mock_ssh = MagicMock()
+        mock_ssh.connect.side_effect = paramiko.AuthenticationException("530 Login incorrect")
+        mock_ssh_class.return_value = mock_ssh
 
         config = RobotConfig(
             address="10.100.79.2",
-            port=21,
+            port=22,
             username="lvuser",
             password="wrong",
         )
@@ -146,199 +162,240 @@ class TestFTPConnectionWithMock:
         assert exc_info.value.operation == "login"
         assert "authentication failed" in str(exc_info.value).lower()
 
-    @patch("frc_log_uploader.discovery.scanner.ftplib.FTP")
-    def test_ftp_connection_vsftpd_oops_error(self, mock_ftp_class):
-        """Test FTP connection handles vsftpd 'bad state' error."""
-        import ftplib
+    @patch("frc_log_uploader.discovery.scanner.paramiko.SSHClient")
+    def test_sftp_list_files(self, mock_ssh_class):
+        """Test directory listing via SFTP listdir_attr."""
+        import stat
 
-        mock_ftp = MagicMock()
-        mock_ftp.getwelcome.return_value = "220 Welcome"
-        mock_ftp.login.side_effect = ftplib.error_perm(
-            "500 OOPS: bad state in vsf_one_process_login"
-        )
-        mock_ftp_class.return_value = mock_ftp
+        mock_ssh = MagicMock()
+        mock_sftp = MagicMock()
+        mock_sftp.listdir_attr.return_value = [
+            make_sftp_attr("test1.wpilog", stat.S_IFREG | 0o644, 1024, 1704110400),
+            make_sftp_attr("test2.wpilog", stat.S_IFREG | 0o644, 2048, 1704114000),
+            make_sftp_attr("subdir", stat.S_IFDIR | 0o755, 0, 1704106800),
+        ]
+        mock_ssh.open_sftp.return_value = mock_sftp
+        mock_ssh_class.return_value = mock_ssh
 
         config = RobotConfig(
             address="10.100.79.2",
-            port=21,
+            port=22,
             username="lvuser",
             password="",
+            log_directory="/home/lvuser/logs",
         )
 
-        with pytest.raises(FTPAuthError) as exc_info:
-            with FTPConnection(config):
-                pass
-
-        assert exc_info.value.operation == "login"
-        assert "vsf_one_process_login" in str(exc_info.value)
-
-    @patch("frc_log_uploader.discovery.scanner.ftplib.FTP")
-    def test_ftp_list_files(self, mock_ftp_class):
-        """Test directory listing."""
-        mock_ftp = MagicMock()
-        mock_ftp.getwelcome.return_value = "220 Welcome"
-        mock_ftp.mlsd.return_value = [
-            ("test1.wpilog", {"type": "file", "size": "1024"}),
-            ("test2.wpilog", {"type": "file", "size": "2048"}),
-            ("subdir", {"type": "dir"}),
-        ]
-        mock_ftp_class.return_value = mock_ftp
-
-        config = RobotConfig(address="10.100.79.2", port=21, username="lvuser", password="")
-
         with FTPConnection(config) as conn:
-            files = conn.list_files(".")
+            files = conn.list_files("/home/lvuser/logs")
 
         names = [name for name, _ in files]
         assert "test1.wpilog" in names
         assert "test2.wpilog" in names
         assert "subdir" in names
 
-    @patch("frc_log_uploader.discovery.scanner.ftplib.FTP")
-    def test_ftp_list_files_mlsd_fallback(self, mock_ftp_class):
-        """Test directory listing falls back to NLST when MLSD fails."""
-        import ftplib
+        # Check type info
+        type_map = {name: facts.get("type") for name, facts in files}
+        assert type_map["subdir"] == "dir"
+        assert type_map["test1.wpilog"] == "file"
 
-        mock_ftp = MagicMock()
-        mock_ftp.getwelcome.return_value = "220 Welcome"
-        mock_ftp.mlsd.side_effect = ftplib.error_perm("500 Command not supported")
-        mock_ftp.nlst.return_value = ["test1.wpilog", "test2.wpilog"]
-        mock_ftp_class.return_value = mock_ftp
-
-        config = RobotConfig(address="10.100.79.2", port=21, username="lvuser", password="")
-
-        with FTPConnection(config) as conn:
-            files = conn.list_files(".")
-
-        names = [name for name, _ in files]
-        assert "test1.wpilog" in names
-        assert "test2.wpilog" in names
-        # NLST fallback doesn't provide type info
-        for _, facts in files:
-            assert facts == {"type": "file"}
-
-    @patch("frc_log_uploader.discovery.scanner.ftplib.FTP")
-    def test_ftp_list_files_failure(self, mock_ftp_class):
+    @patch("frc_log_uploader.discovery.scanner.paramiko.SSHClient")
+    def test_sftp_list_files_failure(self, mock_ssh_class):
         """Test directory listing failure raises FTPProtocolError."""
-        import ftplib
+        mock_ssh = MagicMock()
+        mock_sftp = MagicMock()
+        mock_sftp.listdir_attr.side_effect = FileNotFoundError("No such directory")
+        mock_ssh.open_sftp.return_value = mock_sftp
+        mock_ssh_class.return_value = mock_ssh
 
-        mock_ftp = MagicMock()
-        mock_ftp.getwelcome.return_value = "220 Welcome"
-        mock_ftp.mlsd.side_effect = ftplib.error_perm("500 Error")
-        mock_ftp.nlst.side_effect = ftplib.error_perm("500 Error")
-        mock_ftp_class.return_value = mock_ftp
-
-        config = RobotConfig(address="10.100.79.2", port=21, username="lvuser", password="")
+        config = RobotConfig(
+            address="10.100.79.2",
+            port=22,
+            username="lvuser",
+            password="",
+            log_directory="/home/lvuser/logs",
+        )
 
         with FTPConnection(config) as conn:
             with pytest.raises(FTPProtocolError) as exc_info:
-                conn.list_files(".")
+                conn.list_files("/home/lvuser/logs")
 
         assert exc_info.value.operation == "list"
 
-    @patch("frc_log_uploader.discovery.scanner.ftplib.FTP")
-    def test_ftp_get_file_size(self, mock_ftp_class):
-        """Test getting file size."""
-        mock_ftp = MagicMock()
-        mock_ftp.getwelcome.return_value = "220 Welcome"
-        mock_ftp.size.return_value = 2048
-        mock_ftp_class.return_value = mock_ftp
+    @patch("frc_log_uploader.discovery.scanner.paramiko.SSHClient")
+    def test_sftp_get_file_size(self, mock_ssh_class):
+        """Test getting file size via SFTP stat."""
+        mock_ssh = MagicMock()
+        mock_sftp = MagicMock()
+        mock_attr = MagicMock()
+        mock_attr.st_size = 2048
+        mock_sftp.stat.return_value = mock_attr
+        mock_ssh.open_sftp.return_value = mock_sftp
+        mock_ssh_class.return_value = mock_ssh
 
-        config = RobotConfig(address="10.100.79.2", port=21, username="lvuser", password="")
+        config = RobotConfig(
+            address="10.100.79.2",
+            port=22,
+            username="lvuser",
+            password="",
+            log_directory="/home/lvuser/logs",
+        )
 
         with FTPConnection(config) as conn:
-            size = conn.get_file_size("test.wpilog")
+            size = conn.get_file_size("/home/lvuser/logs/test.wpilog")
 
         assert size == 2048
 
-    @patch("frc_log_uploader.discovery.scanner.ftplib.FTP")
-    def test_ftp_get_file_size_nonexistent(self, mock_ftp_class):
-        """Test getting size of non-existent file returns 0."""
-        import ftplib
+    @patch("frc_log_uploader.discovery.scanner.paramiko.SSHClient")
+    def test_sftp_get_file_size_nonexistent(self, mock_ssh_class):
+        """Test getting size of non-existent file raises FTPDataConnectionError."""
+        mock_ssh = MagicMock()
+        mock_sftp = MagicMock()
+        mock_sftp.stat.side_effect = FileNotFoundError("No such file")
+        mock_ssh.open_sftp.return_value = mock_sftp
+        mock_ssh_class.return_value = mock_ssh
 
-        mock_ftp = MagicMock()
-        mock_ftp.getwelcome.return_value = "220 Welcome"
-        mock_ftp.size.side_effect = ftplib.error_perm("550 File not found")
-        mock_ftp_class.return_value = mock_ftp
-
-        config = RobotConfig(address="10.100.79.2", port=21, username="lvuser", password="")
+        config = RobotConfig(
+            address="10.100.79.2",
+            port=22,
+            username="lvuser",
+            password="",
+            log_directory="/home/lvuser/logs",
+        )
 
         with FTPConnection(config) as conn:
-            size = conn.get_file_size("nonexistent.wpilog")
+            with pytest.raises(FTPDataConnectionError) as exc_info:
+                conn.get_file_size("/home/lvuser/logs/nonexistent.wpilog")
 
-        assert size == 0
+        assert exc_info.value.operation == "size"
 
-    @patch("frc_log_uploader.discovery.scanner.ftplib.FTP")
-    def test_ftp_download_file(self, mock_ftp_class, tmp_path):
-        """Test file download."""
-        mock_ftp = MagicMock()
-        mock_ftp.getwelcome.return_value = "220 Welcome"
-        mock_ftp_class.return_value = mock_ftp
+    @patch("frc_log_uploader.discovery.scanner.paramiko.SSHClient")
+    def test_sftp_download_file(self, mock_ssh_class, tmp_path):
+        """Test file download with integrity verification."""
+        mock_ssh = MagicMock()
+        mock_sftp = MagicMock()
+        mock_ssh.open_sftp.return_value = mock_sftp
+        mock_ssh_class.return_value = mock_ssh
 
-        config = RobotConfig(address="10.100.79.2", port=21, username="lvuser", password="")
+        # stat returns expected size
+        mock_attr = MagicMock()
+        mock_attr.st_size = 3000
+        mock_sftp.stat.return_value = mock_attr
+
+        # open returns a file-like object that yields chunks then empty
+        mock_remote_file = MagicMock()
+        mock_remote_file.__enter__.return_value = mock_remote_file
+        mock_remote_file.read.side_effect = [b"a" * 1000, b"b" * 1000, b"c" * 1000, b""]
+        mock_sftp.open.return_value = mock_remote_file
+
+        config = RobotConfig(
+            address="10.100.79.2",
+            port=22,
+            username="lvuser",
+            password="",
+            log_directory="/home/lvuser/logs",
+        )
         local_path = tmp_path / "downloaded.wpilog"
 
         with FTPConnection(config) as conn:
-            conn.download_file("test.wpilog", local_path)
+            conn.download_file("/home/lvuser/logs/test.wpilog", local_path)
 
-        mock_ftp.retrbinary.assert_called_once()
-        args, kwargs = mock_ftp.retrbinary.call_args
-        assert args[0] == "RETR test.wpilog"
-        assert callable(args[1])
+        mock_sftp.open.assert_called_once_with("/home/lvuser/logs/test.wpilog", "rb")
+        assert mock_remote_file.read.call_count == 4
+        assert local_path.exists()
+        assert local_path.read_bytes() == b"a" * 1000 + b"b" * 1000 + b"c" * 1000
 
-    @patch("frc_log_uploader.discovery.scanner.ftplib.FTP")
-    def test_ftp_download_file_protocol_error(self, mock_ftp_class, tmp_path):
-        """Test download protocol error cleans up partial file."""
-        import ftplib
+    @patch("frc_log_uploader.discovery.scanner.paramiko.SSHClient")
+    def test_sftp_download_file_integrity_mismatch(self, mock_ssh_class, tmp_path):
+        """Test download integrity check fails when byte count doesn't match."""
+        mock_ssh = MagicMock()
+        mock_sftp = MagicMock()
+        mock_ssh.open_sftp.return_value = mock_sftp
+        mock_ssh_class.return_value = mock_ssh
 
-        mock_ftp = MagicMock()
-        mock_ftp.getwelcome.return_value = "220 Welcome"
-        mock_ftp.retrbinary.side_effect = ftplib.error_perm("550 File not found")
-        mock_ftp_class.return_value = mock_ftp
+        # stat says 5000 bytes but we only deliver 1000
+        mock_attr = MagicMock()
+        mock_attr.st_size = 5000
+        mock_sftp.stat.return_value = mock_attr
 
-        config = RobotConfig(address="10.100.79.2", port=21, username="lvuser", password="")
+        mock_remote_file = MagicMock()
+        mock_remote_file.__enter__.return_value = mock_remote_file
+        mock_remote_file.read.side_effect = [b"a" * 1000, b""]
+        mock_sftp.open.return_value = mock_remote_file
+
+        config = RobotConfig(
+            address="10.100.79.2",
+            port=22,
+            username="lvuser",
+            password="",
+            log_directory="/home/lvuser/logs",
+        )
         local_path = tmp_path / "downloaded.wpilog"
+
+        with FTPConnection(config) as conn:
+            with pytest.raises(FTPDataConnectionError) as exc_info:
+                conn.download_file("/home/lvuser/logs/test.wpilog", local_path)
+
+        assert exc_info.value.operation == "download"
+        assert "integrity" in str(exc_info.value).lower()
+        assert not local_path.exists()
+
+    @patch("frc_log_uploader.discovery.scanner.paramiko.SSHClient")
+    def test_sftp_download_file_not_found(self, mock_ssh_class, tmp_path):
+        """Test download of non-existent file raises FTPProtocolError and cleans up."""
+        mock_ssh = MagicMock()
+        mock_sftp = MagicMock()
+        mock_ssh.open_sftp.return_value = mock_sftp
+        mock_ssh_class.return_value = mock_ssh
+
+        mock_sftp.stat.side_effect = FileNotFoundError("No such file")
+
+        config = RobotConfig(
+            address="10.100.79.2",
+            port=22,
+            username="lvuser",
+            password="",
+            log_directory="/home/lvuser/logs",
+        )
+        local_path = tmp_path / "downloaded.wpilog"
+        local_path.write_text("partial")
 
         with FTPConnection(config) as conn:
             with pytest.raises(FTPProtocolError) as exc_info:
-                conn.download_file("nonexistent.wpilog", local_path)
+                conn.download_file("/home/lvuser/logs/nonexistent.wpilog", local_path)
 
         assert exc_info.value.operation == "download"
         assert not local_path.exists()
 
-    @patch("frc_log_uploader.discovery.scanner.ftplib.FTP")
-    def test_ftp_connection_cleanup_on_error(self, mock_ftp_class):
+    @patch("frc_log_uploader.discovery.scanner.paramiko.SSHClient")
+    def test_sftp_connection_cleanup_on_error(self, mock_ssh_class):
         """Test that connection is properly cleaned up on error."""
-        import ftplib
-
-        mock_ftp = MagicMock()
-        mock_ftp.getwelcome.return_value = "220 Welcome"
-        mock_ftp.login.side_effect = ftplib.error_perm("530 Login incorrect")
-        mock_ftp_class.return_value = mock_ftp
+        mock_ssh = MagicMock()
+        mock_ssh.connect.side_effect = paramiko.AuthenticationException("530 Login incorrect")
+        mock_ssh_class.return_value = mock_ssh
 
         config = RobotConfig(
             address="10.100.79.2",
-            port=21,
+            port=22,
             username="lvuser",
             password="wrong",
         )
 
-        # First attempt with wrong password
         with pytest.raises(FTPAuthError):
             with FTPConnection(config):
                 pass
 
-        # Verify cleanup was called (quit or close)
-        assert mock_ftp.quit.called or mock_ftp.close.called
+        # Verify cleanup was called (close)
+        mock_ssh.close.assert_called()
 
-    @patch("frc_log_uploader.discovery.scanner.ftplib.FTP")
-    def test_ftp_context_manager_cleanup_on_exception(self, mock_ftp_class):
+    @patch("frc_log_uploader.discovery.scanner.paramiko.SSHClient")
+    def test_sftp_context_manager_cleanup_on_exception(self, mock_ssh_class):
         """Test that context manager properly cleans up on exception."""
-        mock_ftp = MagicMock()
-        mock_ftp.getwelcome.return_value = "220 Welcome"
-        mock_ftp_class.return_value = mock_ftp
+        mock_ssh = MagicMock()
+        mock_sftp = MagicMock()
+        mock_ssh.open_sftp.return_value = mock_sftp
+        mock_ssh_class.return_value = mock_ssh
 
-        config = RobotConfig(address="10.100.79.2", port=21, username="lvuser", password="")
+        config = RobotConfig(address="10.100.79.2", port=22, username="lvuser", password="")
 
         try:
             with FTPConnection(config) as conn:
@@ -347,63 +404,134 @@ class TestFTPConnectionWithMock:
         except RuntimeError:
             pass
 
-        # Verify cleanup was called
-        mock_ftp.quit.assert_called()
+        mock_ssh.close.assert_called()
 
-    @patch("frc_log_uploader.discovery.scanner.ftplib.FTP")
-    def test_ftp_debug_logging(self, mock_ftp_class, caplog):
+    @patch("frc_log_uploader.discovery.scanner.paramiko.SSHClient")
+    @patch("frc_log_uploader.discovery.scanner.paramiko.util.log_to_file")
+    def test_sftp_debug_logging(self, mock_log_to_file, mock_ssh_class, caplog):
         """Test that debug logging can be enabled."""
-        mock_ftp = MagicMock()
-        mock_ftp.getwelcome.return_value = "220 Welcome"
-        mock_ftp_class.return_value = mock_ftp
+        mock_ssh = MagicMock()
+        mock_sftp = MagicMock()
+        mock_ssh.open_sftp.return_value = mock_sftp
+        mock_ssh_class.return_value = mock_ssh
 
-        config = RobotConfig(address="10.100.79.2", port=21, username="lvuser", password="")
+        config = RobotConfig(address="10.100.79.2", port=22, username="lvuser", password="")
 
         with caplog.at_level(logging.DEBUG):
             with FTPConnection(config, debug=True):
                 pass
 
-        # Check that debug level was set on ftplib
-        mock_ftp.set_debuglevel.assert_called_once_with(2)
-        # Check that our debug message was logged
-        debug_messages = [r.message for r in caplog.records if r.levelno == logging.DEBUG]
-        assert any("debug logging enabled" in msg.lower() for msg in debug_messages)
+        # Check that paramiko debug logging was enabled
+        mock_log_to_file.assert_called_once_with("sftp_debug.log")
 
 
-class TestLogScanner:
-    """Test LogScanner functionality with mocked FTP."""
+class TestPathSanitization:
+    """Test remote path sanitization against traversal and injection."""
 
-    @patch("frc_log_uploader.discovery.scanner.ftplib.FTP")
-    def test_log_scanner_discover(self, mock_ftp_class):
-        """Test LogScanner discover functionality."""
-        mock_ftp = MagicMock()
-        mock_ftp.getwelcome.return_value = "220 Welcome"
+    @patch("frc_log_uploader.discovery.scanner.paramiko.SSHClient")
+    def test_sanitize_blocks_newlines(self, mock_ssh_class):
+        """Newlines in remote path are rejected (command injection)."""
+        mock_ssh = MagicMock()
+        mock_sftp = MagicMock()
+        mock_ssh.open_sftp.return_value = mock_sftp
+        mock_ssh_class.return_value = mock_ssh
 
-        # Track cwd calls to return different data for subdirectory
-        cwd_calls = []
+        config = RobotConfig(address="10.100.79.2", port=22, username="lvuser", password="")
+        with FTPConnection(config) as conn:
+            with pytest.raises(FTPProtocolError) as exc_info:
+                conn._sanitize_remote_path("/home/lvuser/logs\nQUIT")
+            assert exc_info.value.operation == "sanitize"
 
-        def mock_cwd(path):
-            cwd_calls.append(path)
-            return None
-
-        def mock_mlsd():
-            # If we're in a subdirectory, return empty
-            if cwd_calls and cwd_calls[-1] != "/home/lvuser/logs":
-                return []
-            # Root directory listing
-            return [
-                ("match1.wpilog", {"type": "file", "size": "1024", "modify": "20240101120000"}),
-                ("match2.wpilog", {"type": "file", "size": "2048", "modify": "20240101130000"}),
-                ("subdir", {"type": "dir", "modify": "20240101110000"}),
-            ]
-
-        mock_ftp.cwd.side_effect = mock_cwd
-        mock_ftp.mlsd.side_effect = mock_mlsd
-        mock_ftp_class.return_value = mock_ftp
+    @patch("frc_log_uploader.discovery.scanner.paramiko.SSHClient")
+    def test_sanitize_blocks_parent_traversal(self, mock_ssh_class):
+        """``..`` components in remote path are rejected."""
+        mock_ssh = MagicMock()
+        mock_sftp = MagicMock()
+        mock_ssh.open_sftp.return_value = mock_sftp
+        mock_ssh_class.return_value = mock_ssh
 
         config = RobotConfig(
             address="10.100.79.2",
-            port=21,
+            port=22,
+            username="lvuser",
+            password="",
+            log_directory="/home/lvuser/logs",
+        )
+        with FTPConnection(config) as conn:
+            with pytest.raises(FTPProtocolError) as exc_info:
+                conn._sanitize_remote_path("/home/lvuser/logs/../../etc/passwd")
+            assert exc_info.value.operation == "sanitize"
+
+    @patch("frc_log_uploader.discovery.scanner.paramiko.SSHClient")
+    def test_sanitize_confines_to_log_directory(self, mock_ssh_class):
+        """Paths outside the configured log directory are rejected."""
+        mock_ssh = MagicMock()
+        mock_sftp = MagicMock()
+        mock_ssh.open_sftp.return_value = mock_sftp
+        mock_ssh_class.return_value = mock_ssh
+
+        config = RobotConfig(
+            address="10.100.79.2",
+            port=22,
+            username="lvuser",
+            password="",
+            log_directory="/home/lvuser/logs",
+        )
+        with FTPConnection(config) as conn:
+            with pytest.raises(FTPProtocolError):
+                conn._sanitize_remote_path("/home/lvuser/other/wpilog")
+
+    @patch("frc_log_uploader.discovery.scanner.paramiko.SSHClient")
+    def test_sanitize_allows_within_log_directory(self, mock_ssh_class):
+        """Paths within the log directory pass validation."""
+        mock_ssh = MagicMock()
+        mock_sftp = MagicMock()
+        mock_ssh.open_sftp.return_value = mock_sftp
+        mock_ssh_class.return_value = mock_ssh
+
+        config = RobotConfig(
+            address="10.100.79.2",
+            port=22,
+            username="lvuser",
+            password="",
+            log_directory="/home/lvuser/logs",
+        )
+        with FTPConnection(config) as conn:
+            result = conn._sanitize_remote_path("/home/lvuser/logs/match1.wpilog")
+            assert result == "/home/lvuser/logs/match1.wpilog"
+
+
+class TestLogScanner:
+    """Test LogScanner functionality with mocked SFTP."""
+
+    @patch("frc_log_uploader.discovery.scanner.paramiko.SSHClient")
+    def test_log_scanner_discover(self, mock_ssh_class):
+        """Test LogScanner discover functionality."""
+        import stat
+
+        mock_ssh = MagicMock()
+        mock_sftp = MagicMock()
+        mock_ssh.open_sftp.return_value = mock_sftp
+        mock_ssh_class.return_value = mock_ssh
+
+        # Track cwd-equivalent path calls
+        listed_paths = []
+
+        def mock_listdir_attr(path):
+            listed_paths.append(path)
+            if path == "/home/lvuser/logs":
+                return [
+                    make_sftp_attr("match1.wpilog", stat.S_IFREG | 0o644, 1024, 1704110400),
+                    make_sftp_attr("match2.wpilog", stat.S_IFREG | 0o644, 2048, 1704114000),
+                    make_sftp_attr("subdir", stat.S_IFDIR | 0o755, 0, 1704106800),
+                ]
+            return []
+
+        mock_sftp.listdir_attr.side_effect = mock_listdir_attr
+
+        config = RobotConfig(
+            address="10.100.79.2",
+            port=22,
             username="lvuser",
             password="",
             log_directory="/home/lvuser/logs",
@@ -418,53 +546,113 @@ class TestLogScanner:
         assert "match2.wpilog" in log_names
         assert "subdir" in log_names
 
-    @patch("frc_log_uploader.discovery.scanner.ftplib.FTP")
-    def test_log_scanner_check_file_stable(self, mock_ftp_class):
+    @patch("frc_log_uploader.discovery.scanner.paramiko.SSHClient")
+    def test_log_scanner_check_file_stable(self, mock_ssh_class):
         """Test file stability check."""
-        mock_ftp = MagicMock()
-        mock_ftp.getwelcome.return_value = "220 Welcome"
-        mock_ftp.size.side_effect = [1024, 1024]  # Same size = stable
-        mock_ftp_class.return_value = mock_ftp
+        mock_ssh = MagicMock()
+        mock_sftp = MagicMock()
+        mock_ssh.open_sftp.return_value = mock_sftp
+        mock_ssh_class.return_value = mock_ssh
 
-        config = RobotConfig(address="10.100.79.2", port=21, username="lvuser", password="")
+        mock_attr1 = MagicMock()
+        mock_attr1.st_size = 1024
+        mock_attr2 = MagicMock()
+        mock_attr2.st_size = 1024
+        mock_sftp.stat.side_effect = [mock_attr1, mock_attr2]
+
+        config = RobotConfig(
+            address="10.100.79.2",
+            port=22,
+            username="lvuser",
+            password="",
+            log_directory="/home/lvuser/logs",
+        )
 
         scanner = LogScanner(config)
-        is_stable = scanner.check_file_stable("stable.wpilog", 0.01)
+        is_stable = scanner.check_file_stable("/home/lvuser/logs/stable.wpilog", 0.01)
 
         assert is_stable
-        assert mock_ftp.size.call_count == 2
+        assert mock_sftp.stat.call_count == 2
 
-    @patch("frc_log_uploader.discovery.scanner.ftplib.FTP")
-    def test_log_scanner_check_file_unstable(self, mock_ftp_class):
+    @patch("frc_log_uploader.discovery.scanner.paramiko.SSHClient")
+    def test_log_scanner_check_file_unstable(self, mock_ssh_class):
         """Test file stability check for growing file."""
-        mock_ftp = MagicMock()
-        mock_ftp.getwelcome.return_value = "220 Welcome"
-        mock_ftp.size.side_effect = [1024, 2048]  # Different size = unstable
-        mock_ftp_class.return_value = mock_ftp
+        mock_ssh = MagicMock()
+        mock_sftp = MagicMock()
+        mock_ssh.open_sftp.return_value = mock_sftp
+        mock_ssh_class.return_value = mock_ssh
 
-        config = RobotConfig(address="10.100.79.2", port=21, username="lvuser", password="")
+        mock_attr1 = MagicMock()
+        mock_attr1.st_size = 1024
+        mock_attr2 = MagicMock()
+        mock_attr2.st_size = 2048
+        mock_sftp.stat.side_effect = [mock_attr1, mock_attr2]
+
+        config = RobotConfig(
+            address="10.100.79.2",
+            port=22,
+            username="lvuser",
+            password="",
+            log_directory="/home/lvuser/logs",
+        )
 
         scanner = LogScanner(config)
-        is_stable = scanner.check_file_stable("growing.wpilog", 0.01)
+        is_stable = scanner.check_file_stable("/home/lvuser/logs/growing.wpilog", 0.01)
 
         assert not is_stable
 
-    @patch("frc_log_uploader.discovery.scanner.ftplib.FTP")
-    def test_log_scanner_check_file_nonexistent(self, mock_ftp_class):
-        """Test file stability check for non-existent file."""
-        import ftplib
+    @patch("frc_log_uploader.discovery.scanner.paramiko.SSHClient")
+    def test_log_scanner_check_file_nonexistent(self, mock_ssh_class):
+        """Test file stability check for non-existent file returns False."""
+        mock_ssh = MagicMock()
+        mock_sftp = MagicMock()
+        mock_ssh.open_sftp.return_value = mock_sftp
+        mock_ssh_class.return_value = mock_ssh
 
-        mock_ftp = MagicMock()
-        mock_ftp.getwelcome.return_value = "220 Welcome"
-        mock_ftp.size.side_effect = ftplib.error_perm("550 File not found")
-        mock_ftp_class.return_value = mock_ftp
+        mock_sftp.stat.side_effect = FileNotFoundError("No such file")
 
-        config = RobotConfig(address="10.100.79.2", port=21, username="lvuser", password="")
+        config = RobotConfig(
+            address="10.100.79.2",
+            port=22,
+            username="lvuser",
+            password="",
+            log_directory="/home/lvuser/logs",
+        )
 
         scanner = LogScanner(config)
-        is_stable = scanner.check_file_stable("nonexistent.wpilog", 0.01)
+        is_stable = scanner.check_file_stable("/home/lvuser/logs/nonexistent.wpilog", 0.01)
 
         assert not is_stable
+
+    @patch("frc_log_uploader.discovery.scanner.paramiko.SSHClient")
+    def test_log_scanner_check_file_stable_reuses_connection(self, mock_ssh_class):
+        """Test that check_file_stable reuses a supplied connection."""
+        mock_ssh = MagicMock()
+        mock_sftp = MagicMock()
+        mock_ssh.open_sftp.return_value = mock_sftp
+        mock_ssh_class.return_value = mock_ssh
+
+        mock_attr1 = MagicMock()
+        mock_attr1.st_size = 1024
+        mock_attr2 = MagicMock()
+        mock_attr2.st_size = 1024
+        mock_sftp.stat.side_effect = [mock_attr1, mock_attr2]
+
+        config = RobotConfig(
+            address="10.100.79.2",
+            port=22,
+            username="lvuser",
+            password="",
+            log_directory="/home/lvuser/logs",
+        )
+
+        scanner = LogScanner(config)
+        with FTPConnection(config) as conn:
+            is_stable = scanner.check_file_stable("/home/lvuser/logs/stable.wpilog", 0.01, conn)
+
+        assert is_stable
+        # Only one SSH connection should be opened (not two)
+        mock_ssh.connect.assert_called_once()
 
 
 class TestFTPErrorHierarchy:

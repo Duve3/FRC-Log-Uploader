@@ -11,7 +11,7 @@ class MockConfig:
     def __init__(self, team: int | None = None, address: str = ""):
         self.team = team
         self.address = address
-        self.port = 21
+        self.port = 22
 
 
 def test_team_to_ip_generation():
@@ -42,7 +42,7 @@ def test_find_uses_explicit_address_override(mock_connect):
     assert address.ip == "192.168.1.50"
     assert address.source == "override"
     assert address.hostname == "192.168.1.50"
-    mock_connect.assert_called_once_with(("192.168.1.50", 21), timeout=3.0)
+    mock_connect.assert_called_once_with(("192.168.1.50", 22), timeout=3.0)
     mock_socket.close.assert_called_once()
 
 
@@ -61,7 +61,7 @@ def test_find_uses_team_ip(mock_gethostbyname, mock_connect):
     assert address.ip == "10.100.79.2"
     assert address.source == "team_ip"
     assert address.team == 10079
-    mock_connect.assert_called_once_with(("10.100.79.2", 21), timeout=3.0)
+    mock_connect.assert_called_once_with(("10.100.79.2", 22), timeout=3.0)
     mock_gethostbyname.assert_not_called()
     mock_socket.close.assert_called_once()
 
@@ -160,7 +160,7 @@ def test_find_with_address_no_team(mock_connect):
     assert address.ip == "192.168.1.100"
     assert address.source == "override"
     assert address.team is None
-    mock_connect.assert_called_once_with(("192.168.1.100", 21), timeout=3.0)
+    mock_connect.assert_called_once_with(("192.168.1.100", 22), timeout=3.0)
     mock_socket.close.assert_called_once()
 
 

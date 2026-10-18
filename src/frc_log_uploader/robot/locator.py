@@ -140,8 +140,10 @@ class RobotLocator:
             logger.debug(f"Could not resolve {address}: {e}")
             return None
 
-    def _test_connection(self, ip: str, port: int = 21, timeout: float = 3.0) -> bool:
-        """Test if we can connect to the robot and FTP responds."""
+    def _test_connection(self, ip: str, port: int | None = None, timeout: float = 3.0) -> bool:
+        """Test if we can connect to the robot's SFTP port."""
+        if port is None:
+            port = self.config.port
         try:
             sock = socket.create_connection((ip, port), timeout=timeout)
             sock.close()

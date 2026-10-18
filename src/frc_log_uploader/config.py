@@ -16,7 +16,7 @@ class RobotConfig:
     log_directory: str = "/home/lvuser/logs"
     username: str = "lvuser"
     password: str = ""
-    port: int = 21
+    port: int = 22
     use_ftp: bool = True
     connection_timeout: float = 10.0
     transfer_timeout: float = 30.0
