@@ -9,6 +9,7 @@ from pathlib import Path
 import paramiko
 
 from ..config import RobotConfig
+from ..robot.connection import FTP_PORT, SSH_SFTP_PORT
 from .models import DiscoveryResult, LogFile
 
 logger = logging.getLogger(__name__)
@@ -58,8 +59,14 @@ class FTPConnection:
         self._connected = False
 
     def connect(self) -> None:
-        """Establish SFTP connection to the roboRIO."""
-        logger.info(f"Connecting to roboRIO at {self.config.address}:{self.config.port}")
+        """Establish SFTP connection to the roboRIO on the configured port.
+
+        Raises:
+            FTPConnectionError: If the connection fails.
+            FTPAuthError: If authentication fails.
+        """
+        port = self.config.port
+        logger.info(f"Connecting to roboRIO at {self.config.address}:{port}")
 
         if self._is_url(self.config.address):
             raise FTPConnectionError(
@@ -79,7 +86,7 @@ class FTPConnection:
         try:
             self._ssh.connect(
                 hostname=self.config.address,
-                port=self.config.port,
+                port=port,
                 username=self.config.username,
                 password=self.config.password,
                 timeout=self.config.connection_timeout,
@@ -94,24 +101,57 @@ class FTPConnection:
             if self._sftp.sock:
                 self._sftp.sock.settimeout(self.config.transfer_timeout)
 
-            logger.info("Connected successfully")
+            logger.info(f"Connected successfully on port {port}")
 
         except paramiko.AuthenticationException as e:
             self._safe_disconnect()
             raise FTPAuthError(f"SFTP authentication failed: {e}", "login", e)
         except paramiko.SSHException as e:
             self._safe_disconnect()
+            error_str = str(e).lower()
+            if "banner" in error_str and port == FTP_PORT:
+                # Connected to FTP server on port 21, not an SSH server
+                raise FTPConnectionError(
+                    f"Connected to {self.config.address}:{port} but it is running FTP, not SSH/SFTP. "
+                    f"roboRIO FTP runs on port {FTP_PORT}; SFTP requires SSH on port {SSH_SFTP_PORT}. "
+                    f"Set port={SSH_SFTP_PORT} and use_ftp=false in your config, and ensure SSH is "
+                    f"enabled on the roboRIO.",
+                    "connect",
+                    e,
+                )
+            if "banner" in error_str:
+                # Connected to port 22 but no SSH banner — SSH may not be enabled
+                raise FTPConnectionError(
+                    f"Connected to {self.config.address}:{port} but did not receive an SSH protocol banner. "
+                    f"SSH/SFTP may not be enabled on the roboRIO. Enable SSH via the roboRIO web "
+                    f"dashboard or imaging tool, then try again.",
+                    "connect",
+                    e,
+                )
             raise FTPConnectionError(f"SFTP connection failed: {e}", "connect", e)
         except (TimeoutError, ConnectionRefusedError, OSError) as e:
             self._safe_disconnect()
             raise FTPConnectionError(
-                f"TCP connection failed to {self.config.address}:{self.config.port}: {e}",
+                f"TCP connection failed to {self.config.address}:{port}: {e}",
                 "connect",
                 e,
             )
         except Exception as e:
             self._safe_disconnect()
             raise FTPConnectionError(f"Unexpected error during SFTP connection: {e}", "connect", e)
+
+    def probe_connection(self) -> int | None:
+        """Probe common roboRIO ports and return the first open SSH/SFTP port.
+
+        Tries port 22 (SSH/SFTP) first, then port 21 (FTP) as a diagnostic.
+        Returns None if no ports are open.
+
+        This is used by the robot locator to discover the correct port before
+        attempting an SFTP connection.
+        """
+        from ..robot.connection import probe_ssh_port
+
+        return probe_ssh_port(self.config.address)
 
     def _is_url(self, address: str) -> bool:
         """Check if address contains a URL scheme."""

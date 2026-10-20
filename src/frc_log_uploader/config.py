@@ -1,10 +1,13 @@
 """Configuration management using TOML."""
 
+import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 
 import tomli
 import tomli_w
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -17,9 +20,17 @@ class RobotConfig:
     username: str = "lvuser"
     password: str = ""
     port: int = 22
-    use_ftp: bool = True
+    use_ftp: bool = False
     connection_timeout: float = 10.0
     transfer_timeout: float = 30.0
+
+    def __post_init__(self) -> None:
+        """Warn if use_ftp=True with port 22 (SFTP) — FTP uses port 21."""
+        if self.use_ftp and self.port == 22:
+            logger.warning(
+                "use_ftp=True but port=22 (SSH/SFTP). FTP uses port 21; "
+                "set port=21 for FTP or use_ftp=False for SFTP."
+            )
 
 
 @dataclass

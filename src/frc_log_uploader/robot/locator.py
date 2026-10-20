@@ -4,6 +4,8 @@ import logging
 import socket
 from dataclasses import dataclass
 
+from ..robot.connection import SSH_SFTP_PORT, test_connection
+
 logger = logging.getLogger(__name__)
 
 
@@ -15,12 +17,13 @@ class RobotAddress:
     team: int | None = None
     source: str = "unknown"  # "override", "team_ip", "mdns", "usb"
     hostname: str | None = None
+    port: int = SSH_SFTP_PORT
 
     def __str__(self) -> str:
         source_info = f" (via {self.source})"
         if self.hostname and self.hostname != self.ip:
-            return f"{self.hostname} -> {self.ip}{source_info}"
-        return f"{self.ip}{source_info}"
+            return f"{self.hostname} -> {self.ip}:{self.port}{source_info}"
+        return f"{self.ip}:{self.port}{source_info}"
 
 
 class RobotLocator:
@@ -31,16 +34,22 @@ class RobotLocator:
         self._resolved_address: RobotAddress | None = None
 
     def find(self) -> RobotAddress:
-        """Find the roboRIO using the configured discovery order."""
+        """Find the roboRIO using the configured discovery order.
+
+        Tests connectivity on the configured port (default 22 for SSH/SFTP).
+        """
+        port = getattr(self.config, "port", SSH_SFTP_PORT) or SSH_SFTP_PORT
+
         # 1. Explicit address override
         if self.config.address:
             ip = self._resolve_address(self.config.address)
-            if ip and self._test_connection(ip):
+            if ip and self._test_connection(ip, port):
                 self._resolved_address = RobotAddress(
                     ip=ip,
                     team=self.config.team,
                     source="override",
                     hostname=self.config.address,
+                    port=port,
                 )
                 logger.info(f"Using explicit address override: {self._resolved_address}")
                 return self._resolved_address
@@ -52,11 +61,12 @@ class RobotLocator:
         # 2. Team number IP derivation
         if self.config.team:
             team_ip = self._team_to_ip(self.config.team)
-            if self._test_connection(team_ip):
+            if self._test_connection(team_ip, port):
                 self._resolved_address = RobotAddress(
                     ip=team_ip,
                     team=self.config.team,
                     source="team_ip",
+                    port=port,
                 )
                 logger.info(f"Found robot via team IP: {self._resolved_address}")
                 return self._resolved_address
@@ -64,23 +74,25 @@ class RobotLocator:
             # 3. mDNS fallback for team
             mdns_name = f"roborio-{self.config.team}-frc.local"
             mdns_ip = self._resolve_address(mdns_name)
-            if mdns_ip and self._test_connection(mdns_ip):
+            if mdns_ip and self._test_connection(mdns_ip, port):
                 self._resolved_address = RobotAddress(
                     ip=mdns_ip,
                     team=self.config.team,
                     source="mdns",
                     hostname=mdns_name,
+                    port=port,
                 )
                 logger.info(f"Found robot via mDNS: {self._resolved_address}")
                 return self._resolved_address
 
         # 4. USB fallback
         usb_ip = "172.22.11.2"
-        if self._test_connection(usb_ip):
+        if self._test_connection(usb_ip, port):
             self._resolved_address = RobotAddress(
                 ip=usb_ip,
                 team=self.config.team,
                 source="usb",
+                port=port,
             )
             logger.info(f"Found robot via USB: {self._resolved_address}")
             return self._resolved_address
@@ -88,12 +100,13 @@ class RobotLocator:
         # 5. Last resort: try any configured address without team
         if self.config.address:
             ip = self._resolve_address(self.config.address)
-            if ip and self._test_connection(ip):
+            if ip and self._test_connection(ip, port):
                 self._resolved_address = RobotAddress(
                     ip=ip,
                     team=self.config.team,
                     source="override",
                     hostname=self.config.address,
+                    port=port,
                 )
                 logger.info(f"Found robot via configured address: {self._resolved_address}")
                 return self._resolved_address
@@ -140,17 +153,9 @@ class RobotLocator:
             logger.debug(f"Could not resolve {address}: {e}")
             return None
 
-    def _test_connection(self, ip: str, port: int | None = None, timeout: float = 3.0) -> bool:
-        """Test if we can connect to the robot's SFTP port."""
-        if port is None:
-            port = self.config.port
-        try:
-            sock = socket.create_connection((ip, port), timeout=timeout)
-            sock.close()
-            return True
-        except (TimeoutError, ConnectionRefusedError, OSError) as e:
-            logger.debug(f"Connection test failed for {ip}:{port}: {e}")
-            return False
+    def _test_connection(self, ip: str, port: int, timeout: float = 3.0) -> bool:
+        """Test if we can connect to the robot's port."""
+        return test_connection(ip, port, timeout=timeout)
 
     def get_resolved_address(self) -> RobotAddress | None:
         """Get the last successfully resolved address."""

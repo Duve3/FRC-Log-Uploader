@@ -167,9 +167,9 @@ def test_find_with_address_no_team(mock_connect):
 def test_robot_address_str_representation():
     """Test RobotAddress string representation."""
     addr = RobotAddress(ip="10.100.79.2", team=10079, source="team_ip")
-    assert str(addr) == "10.100.79.2 (via team_ip)"
+    assert str(addr) == "10.100.79.2:22 (via team_ip)"
 
     addr = RobotAddress(
         ip="10.100.79.2", team=10079, source="mdns", hostname="roborio-10079-frc.local"
     )
-    assert "roborio-10079-frc.local -> 10.100.79.2" in str(addr)
+    assert "roborio-10079-frc.local -> 10.100.79.2:22" in str(addr)
