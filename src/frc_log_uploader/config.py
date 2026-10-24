@@ -22,7 +22,7 @@ class RobotConfig:
     port: int = 22
     use_ftp: bool = False
     connection_timeout: float = 10.0
-    transfer_timeout: float = 30.0
+    transfer_timeout: float = 300.0
 
     def __post_init__(self) -> None:
         """Warn if use_ftp=True with port 22 (SFTP) — FTP uses port 21."""

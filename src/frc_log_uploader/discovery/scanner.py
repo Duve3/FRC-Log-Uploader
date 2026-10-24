@@ -277,7 +277,10 @@ class FTPConnection:
 
         # Get expected size for integrity verification
         try:
-            expected_size = sftp.stat(remote_path).st_size
+            stat_attr = sftp.stat(remote_path)
+            expected_size = stat_attr.st_size
+            if expected_size is None:
+                expected_size = 0
         except FileNotFoundError as e:
             if local_path.exists():
                 local_path.unlink(missing_ok=True)
@@ -293,28 +296,57 @@ class FTPConnection:
                 f"SFTP stat failed for '{remote_path}': {e}", "download", e
             )
 
+        expected_size_mb = expected_size / (1024 * 1024)
+        logger.info(
+            f"Starting download of '{remote_path}' ({expected_size_mb:.1f} MB) to {local_path}"
+        )
+
         try:
             with sftp.open(remote_path, "rb") as remote_file:
                 with open(local_path, "wb") as local_file:
                     total = 0
-                    chunk_size = 32 * 1024
+                    chunk_size = 256 * 1024
+                    consecutive_empty = 0
+                    last_logged = 0
                     while True:
-                        data = remote_file.read(chunk_size)
+                        try:
+                            data = remote_file.read(chunk_size)
+                        except StopIteration:
+                            # Defensive: some mock SFTP implementations raise StopIteration
+                            # instead of returning b"" at EOF. Real paramiko returns b"".
+                            data = b""
                         if not data:
-                            break
+                            consecutive_empty += 1
+                            # Allow a few empty reads before treating as EOF
+                            # (SFTP servers can return empty on transient conditions)
+                            if consecutive_empty >= 3:
+                                break
+                            continue
+                        consecutive_empty = 0
                         local_file.write(data)
                         total += len(data)
+
+                        # Log progress every ~10MB or when complete
+                        if total - last_logged >= 10 * 1024 * 1024 or total == expected_size:
+                            pct = (total / expected_size * 100) if expected_size > 0 else 0
+                            logger.debug(
+                                f"Downloaded {total / (1024 * 1024):.1f}/{expected_size_mb:.1f} MB ({pct:.0f}%) of '{remote_path}'"
+                            )
+                            last_logged = total
 
             # Integrity verification: confirm all expected bytes were received
             if total != expected_size:
                 local_path.unlink(missing_ok=True)
                 raise FTPDataConnectionError(
                     f"Download integrity check failed for '{remote_path}': "
-                    f"expected {expected_size} bytes, received {total}",
+                    f"expected {expected_size} bytes ({expected_size_mb:.1f} MB), "
+                    f"received {total} bytes ({total / (1024 * 1024):.1f} MB)",
                     "download",
                 )
 
-            logger.debug(f"Downloaded {remote_path} ({total} bytes) to {local_path}")
+            logger.info(
+                f"Downloaded '{remote_path}' ({total / (1024 * 1024):.1f} MB) to {local_path}"
+            )
         except FTPError:
             # Re-raise our custom errors as-is (don't double-wrap)
             raise

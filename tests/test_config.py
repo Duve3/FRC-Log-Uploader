@@ -22,7 +22,7 @@ class TestRobotConfig:
         assert config.port == 22
         assert config.use_ftp is False
         assert config.connection_timeout == 10.0
-        assert config.transfer_timeout == 30.0
+        assert config.transfer_timeout == 300.0
 
     def test_custom_values(self):
         """Test RobotConfig with custom values."""

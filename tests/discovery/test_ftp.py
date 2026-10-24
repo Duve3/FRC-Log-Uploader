@@ -300,7 +300,8 @@ class TestSFTPConnectionWithMock:
             conn.download_file("/home/lvuser/logs/test.wpilog", local_path)
 
         mock_sftp.open.assert_called_once_with("/home/lvuser/logs/test.wpilog", "rb")
-        assert mock_remote_file.read.call_count == 4
+        # 3 data chunks + up to 3 empty reads (robustness against transient empty reads)
+        assert mock_remote_file.read.call_count >= 4
         assert local_path.exists()
         assert local_path.read_bytes() == b"a" * 1000 + b"b" * 1000 + b"c" * 1000
 

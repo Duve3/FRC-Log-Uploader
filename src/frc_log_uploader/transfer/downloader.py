@@ -41,31 +41,50 @@ class LogDownloader:
         self.staging_dir.mkdir(parents=True, exist_ok=True)
 
     def download(self, log_file: LogFile) -> DownloadResult:
-        """Download a single log file or directory using one SFTP connection."""
+        """Download a single log file or directory using one SFTP connection.
+
+        Retries transient failures up to 3 times with exponential backoff.
+        """
         logger.info(f"Downloading {log_file.name} ({log_file.size / 1024 / 1024:.1f} MB)")
 
         local_path = self.staging_dir / log_file.name
+        max_retries = 3
+        base_delay = 2.0
 
-        try:
-            if log_file.is_directory:
-                self._download_directory(log_file, local_path)
-            else:
-                self._download_file(log_file, local_path)
-
-            logger.info(f"Downloaded {log_file.name} to {local_path}")
-            return DownloadResult(log_file, local_path, success=True)
-
-        except Exception as e:
-            logger.error(f"Failed to download {log_file.name}: {e}")
-            # Clean up partial download
-            if local_path.exists():
-                if local_path.is_dir():
-                    import shutil
-
-                    shutil.rmtree(local_path)
+        for attempt in range(1, max_retries + 1):
+            try:
+                if log_file.is_directory:
+                    self._download_directory(log_file, local_path)
                 else:
-                    local_path.unlink()
-            return DownloadResult(log_file, local_path, success=False, error=str(e))
+                    self._download_file(log_file, local_path)
+
+                logger.info(f"Downloaded {log_file.name} to {local_path}")
+                return DownloadResult(log_file, local_path, success=True)
+
+            except Exception as e:
+                error_msg = str(e)
+                logger.warning(
+                    f"Download attempt {attempt}/{max_retries} failed for {log_file.name}: {error_msg}"
+                )
+
+                # Clean up partial download
+                if local_path.exists():
+                    if local_path.is_dir():
+                        import shutil
+
+                        shutil.rmtree(local_path)
+                    else:
+                        local_path.unlink()
+
+                if attempt < max_retries:
+                    delay = base_delay * (2 ** (attempt - 1))
+                    logger.info(f"Retrying download of {log_file.name} in {delay}s...")
+                    time.sleep(delay)
+                else:
+                    logger.error(f"Failed to download {log_file.name} after {max_retries} attempts")
+                    return DownloadResult(log_file, local_path, success=False, error=error_msg)
+
+        return DownloadResult(log_file, local_path, success=False, error="Unknown error")
 
     def _download_file(self, log_file: LogFile, local_path: Path) -> None:
         """Download a single file."""
