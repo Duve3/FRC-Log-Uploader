@@ -86,11 +86,17 @@ class LogDownloader:
 
         return DownloadResult(log_file, local_path, success=False, error="Unknown error")
 
-    def _download_file(self, log_file: LogFile, local_path: Path) -> None:
-        """Download a single file."""
+    def _download_file(self, log_file: LogFile, local_path: Path, conn=None) -> None:
+        """Download a single file.
+
+        Args:
+            log_file: The log file to download
+            local_path: Local destination path
+            conn: Optional existing FTPConnection to reuse. If not provided, creates a new one.
+        """
         from ..discovery import FTPConnection
 
-        with FTPConnection(self.config) as conn:
+        if conn is not None:
             conn.download_file(log_file.full_remote_path, local_path)
 
     def _download_directory(self, log_dir: LogFile, local_dir: Path) -> None:
@@ -133,7 +139,7 @@ class LogDownloader:
         # Group downloads so directory trees share one connection; single files
         # each get their own connection (they are independent).
         for log_file in log_files:
-            result = self.download(log_file)
+            result = self.download(log_file, conn)
             results.append(result)
             if not result.success:
                 logger.warning(f"Download failed for {log_file.name}: {result.error}")
