@@ -40,37 +40,51 @@ class LogDownloader:
         self.scanner = LogScanner(config)
         self.staging_dir.mkdir(parents=True, exist_ok=True)
 
-    def download(self, log_file: LogFile, conn=None) -> DownloadResult:
-        """Download a single log file or directory.
+    def download(self, log_file: LogFile) -> DownloadResult:
+        """Download a single log file or directory using one SFTP connection.
 
-        Args:
-            log_file: The log file to download
-            conn: Optional existing FTPConnection to reuse
+        Retries transient failures up to 3 times with exponential backoff.
         """
         logger.info(f"Downloading {log_file.name} ({log_file.size / 1024 / 1024:.1f} MB)")
 
         local_path = self.staging_dir / log_file.name
+        max_retries = 3
+        base_delay = 2.0
 
-        try:
-            if log_file.is_directory:
-                self._download_directory(log_file, local_path, conn)
-            else:
-                self._download_file(log_file, local_path, conn)
-
-            logger.info(f"Downloaded {log_file.name} to {local_path}")
-            return DownloadResult(log_file, local_path, success=True)
-
-        except Exception as e:
-            logger.error(f"Failed to download {log_file.name}: {e}")
-            # Clean up partial download
-            if local_path.exists():
-                if local_path.is_dir():
-                    import shutil
-
-                    shutil.rmtree(local_path)
+        for attempt in range(1, max_retries + 1):
+            try:
+                if log_file.is_directory:
+                    self._download_directory(log_file, local_path)
                 else:
-                    local_path.unlink()
-            return DownloadResult(log_file, local_path, success=False, error=str(e))
+                    self._download_file(log_file, local_path)
+
+                logger.info(f"Downloaded {log_file.name} to {local_path}")
+                return DownloadResult(log_file, local_path, success=True)
+
+            except Exception as e:
+                error_msg = str(e)
+                logger.warning(
+                    f"Download attempt {attempt}/{max_retries} failed for {log_file.name}: {error_msg}"
+                )
+
+                # Clean up partial download
+                if local_path.exists():
+                    if local_path.is_dir():
+                        import shutil
+
+                        shutil.rmtree(local_path)
+                    else:
+                        local_path.unlink()
+
+                if attempt < max_retries:
+                    delay = base_delay * (2 ** (attempt - 1))
+                    logger.info(f"Retrying download of {log_file.name} in {delay}s...")
+                    time.sleep(delay)
+                else:
+                    logger.error(f"Failed to download {log_file.name} after {max_retries} attempts")
+                    return DownloadResult(log_file, local_path, success=False, error=error_msg)
+
+        return DownloadResult(log_file, local_path, success=False, error="Unknown error")
 
     def _download_file(self, log_file: LogFile, local_path: Path, conn=None) -> None:
         """Download a single file.
@@ -84,27 +98,19 @@ class LogDownloader:
 
         if conn is not None:
             conn.download_file(log_file.full_remote_path, local_path)
-        else:
-            with FTPConnection(self.config) as new_conn:
-                new_conn.download_file(log_file.full_remote_path, local_path)
 
-    def _download_directory(self, log_dir: LogFile, local_dir: Path, conn=None) -> None:
-        """Download a directory recursively.
-
-        Args:
-            log_dir: The log directory to download
-            local_dir: Local destination directory
-            conn: Optional existing FTPConnection to reuse. If not provided, creates new ones.
-        """
+    def _download_directory(self, log_dir: LogFile, local_dir: Path) -> None:
+        """Download a directory tree using a single SFTP connection."""
         from ..discovery import FTPConnection
 
         local_dir.mkdir(parents=True, exist_ok=True)
 
-        if conn is not None:
-            items = conn.list_files(log_dir.full_remote_path)
-        else:
-            with FTPConnection(self.config) as new_conn:
-                items = new_conn.list_files(log_dir.full_remote_path)
+        with FTPConnection(self.config) as conn:
+            self._download_directory_recursive(log_dir, local_dir, conn)
+
+    def _download_directory_recursive(self, log_dir: LogFile, local_dir: Path, conn) -> None:
+        """Recursively download a directory, reusing the given SFTP connection."""
+        items = conn.list_files(log_dir.full_remote_path)
 
         for name, facts in items:
             if name in (".", ".."):
@@ -122,28 +128,16 @@ class LogDownloader:
                     modified_time=log_dir.modified_time,
                     is_directory=True,
                 )
-                self._download_directory(sub_log, local_path, conn)
+                self._download_directory_recursive(sub_log, local_path, conn)
             else:
-                self._download_file(
-                    log_file=LogFile(
-                        remote_path=remote_path,
-                        name=name,
-                        size=0,
-                        modified_time=log_dir.modified_time,
-                        is_directory=False,
-                    ),
-                    local_path=local_path,
-                    conn=conn,
-                )
+                conn.download_file(remote_path, local_path)
 
-    def download_multiple(self, log_files: list[LogFile], conn=None) -> list[DownloadResult]:
-        """Download multiple log files.
+    def download_multiple(self, log_files: list[LogFile]) -> list[DownloadResult]:
+        """Download multiple log files, reusing one SFTP connection per directory."""
+        results: list[DownloadResult] = []
 
-        Args:
-            log_files: List of log files to download
-            conn: Optional existing FTPConnection to reuse for all downloads
-        """
-        results = []
+        # Group downloads so directory trees share one connection; single files
+        # each get their own connection (they are independent).
         for log_file in log_files:
             result = self.download(log_file, conn)
             results.append(result)
@@ -160,16 +154,19 @@ class LogDownloader:
             self.staging_dir.mkdir(parents=True, exist_ok=True)
 
     def wait_for_stable(self, log_file: LogFile, interval: float, max_wait: float = 60.0) -> bool:
-        """Wait for a log file to become stable."""
+        """Wait for a log file to become stable, reusing one SFTP connection."""
+        from ..discovery import FTPConnection
+
         logger.info(f"Waiting for {log_file.name} to stabilize...")
         start_time = time.time()
 
-        while time.time() - start_time < max_wait:
-            if self.scanner.check_file_stable(log_file.full_remote_path, interval):
-                logger.info(f"{log_file.name} is stable")
-                return True
-            logger.debug(f"{log_file.name} still changing, waiting...")
-            time.sleep(interval)
+        with FTPConnection(self.config) as conn:
+            while time.time() - start_time < max_wait:
+                if self.scanner.check_file_stable(log_file.full_remote_path, interval, conn):
+                    logger.info(f"{log_file.name} is stable")
+                    return True
+                logger.debug(f"{log_file.name} still changing, waiting...")
+                time.sleep(interval)
 
         logger.warning(f"Timeout waiting for {log_file.name} to stabilize")
         return False

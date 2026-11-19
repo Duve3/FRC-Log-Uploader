@@ -1,10 +1,13 @@
 """Configuration management using TOML."""
 
+import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 
 import tomli
 import tomli_w
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -16,10 +19,18 @@ class RobotConfig:
     log_directory: str = "/home/lvuser/logs"
     username: str = "lvuser"
     password: str = ""
-    port: int = 21
-    use_ftp: bool = True
+    port: int = 22
+    use_ftp: bool = False
     connection_timeout: float = 10.0
-    transfer_timeout: float = 30.0
+    transfer_timeout: float = 300.0
+
+    def __post_init__(self) -> None:
+        """Warn if use_ftp=True with port 22 (SFTP) — FTP uses port 21."""
+        if self.use_ftp and self.port == 22:
+            logger.warning(
+                "use_ftp=True but port=22 (SSH/SFTP). FTP uses port 21; "
+                "set port=21 for FTP or use_ftp=False for SFTP."
+            )
 
 
 @dataclass
@@ -28,17 +39,7 @@ class LogsConfig:
 
     count: int = 5
     stability_seconds: float = 2.0
-    extensions: list[str] = field(
-        default_factory=lambda: [
-            ".wpilog",
-            ".hoot",
-            ".revlog",
-            ".dslog",
-            ".dsevents",
-            ".rlog",
-            ".log",
-        ]
-    )
+    extensions: list[str] = field(default_factory=lambda: [".wpilog"])
 
 
 @dataclass
@@ -71,9 +72,15 @@ class Config:
 
     @classmethod
     def load(cls, path: Path) -> "Config":
-        """Load configuration from TOML file."""
+        """Load configuration from TOML file.
+
+        Relative paths in cloud config (credentials_file, token_file) are resolved
+        relative to the config file's directory.
+        """
         if not path.exists():
             return cls()
+
+        config_dir = path.parent.resolve()
 
         with open(path, "rb") as f:
             data = tomli.load(f)
@@ -84,7 +91,14 @@ class Config:
         if "logs" in data:
             config.logs = LogsConfig(**data["logs"])
         if "cloud" in data:
-            config.cloud = CloudConfig(**data["cloud"])
+            cloud_data = data["cloud"].copy()
+            # Resolve relative paths for credentials and token files
+            for key in ("credentials_file", "token_file"):
+                if key in cloud_data and cloud_data[key]:
+                    cloud_path = Path(cloud_data[key])
+                    if not cloud_path.is_absolute():
+                        cloud_data[key] = str((config_dir / cloud_path).resolve())
+            config.cloud = CloudConfig(**cloud_data)
         if "watch" in data:
             config.watch = WatchConfig(**data["watch"])
         return config

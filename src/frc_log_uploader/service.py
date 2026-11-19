@@ -34,8 +34,9 @@ class LogUploaderService:
         """Ensure robot is located and return resolved address."""
         if self.resolved_address is None:
             self.resolved_address = self.locator.find()
-            # Update the scanner and downloader configs with the resolved IP
+            # Update the scanner and downloader configs with the resolved IP and port
             self.config.robot.address = self.resolved_address.ip
+            self.config.robot.port = self.resolved_address.port
         return self.resolved_address
 
     def scan(self) -> DiscoveryResult:

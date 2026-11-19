@@ -48,8 +48,8 @@ address = ""                          # Optional: explicit address override (IP 
 log_directory = "/home/lvuser/logs"   # Default roboRIO log directory
 username = "lvuser"                   # Default roboRIO username
 password = ""                         # Default roboRIO password (empty)
-port = 21                             # FTP port
-use_ftp = true                        # Use FTP (faster than SFTP)
+port = 22                             # SSH/SFTP port (FTP uses 21 — do not use for SFTP)
+use_ftp = false                       # Use SFTP (correct protocol per WPILib)
 
 [logs]
 count = 5                             # Number of logs to upload
@@ -190,7 +190,7 @@ This mirrors the discovery behavior used by WPILib tools and AdvantageScope 2026
 
 ### Log Discovery
 
-- Connects to roboRIO via FTP (port 21)
+- Connects to roboRIO via SFTP (port 22)
 - Recursively scans the configured log directory
 - Collects file/directory names, sizes, and modification times
 - Supports subdirectories (used by CTRE Signal Logger)
@@ -247,9 +247,9 @@ This implementation is based on research into AdvantageScope's 2026 release:
 
 ### Key Findings
 
-1. **Protocol Change**: AdvantageScope 2026 switched from SFTP to FTP for 2-4x faster transfers
-   - SFTP: ~25-90 Mb/s depending on roboRIO CPU load
-   - FTP: ~80-95 Mb/s (near wire speed on 100 Mb/s Ethernet)
+1. **Protocol**: SFTP is the correct protocol per WPILib (FTP on port 21 is legacy)
+   - SFTP: runs over SSH on port 22
+   - FTP: runs on port 21 (legacy, not recommended)
 
 2. **Default Log Directory**: `/home/lvuser/logs` (standard WPILib location)
 
@@ -257,14 +257,15 @@ This implementation is based on research into AdvantageScope's 2026 release:
 
 4. **Connection**: Uses mDNS address (`roborio-XXXX-frc.local`) or USB fallback (`172.22.11.2`)
 
-5. **Authentication**: Default `lvuser` user with empty password (standard roboRIO FTP config)
+5. **Authentication**: Default `lvuser` user with empty password (standard roboRIO SSH config)
 
-6. **File Listing**: Uses FTP MLSD for detailed metadata (size, modification time, type)
+6. **File Listing**: Uses SFTP `listdir_attr` for detailed metadata (size, modification time, type)
 
 ### Implementation Decisions
 
-- **FTP over SFTP**: Following AdvantageScope 2026's performance optimization
-- **No resumability**: FTP doesn't natively support resume; files are typically <200MB
+- **SFTP over FTP**: Following WPILib's recommendation — SFTP is the correct protocol
+- **Port 22**: SSH/SFTP runs on port 22; port 21 is FTP only and will not work with paramiko
+- **No resumability**: SFTP doesn't natively support resume; files are typically <200MB
 - **Stability check via size polling**: Simple and effective for detecting active writes
 - **Google Drive API**: Official API with OAuth2, not service account (simpler for team use)
 
